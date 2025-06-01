@@ -48,7 +48,7 @@ A powerful, modular Telegram bot for converting documents and images with advanc
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/telegram-document-converter-bot converterbot/
+   git clone https://github.com/Miorszx/telegram-document-converter-bot converterbot/
    cd converterbot
    ```
 
