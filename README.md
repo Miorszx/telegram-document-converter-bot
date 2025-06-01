@@ -75,7 +75,7 @@ A powerful, modular Telegram bot for converting documents and images with advanc
 
 5. **Run the bot**
    ```bash
-   python main.py
+   python3 main.py
    ```
 
 ## 📋 Installation Requirements
