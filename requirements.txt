@@ -1,0 +1,30 @@
+# Core Telegram Bot Dependencies
+python-telegram-bot>=20.0
+asyncio-throttle>=1.0.2
+
+# Document Processing Libraries
+PyMuPDF>=1.23.0  # fitz for PDF processing
+python-docx>=0.8.11  # Word document processing
+openpyxl>=3.1.0  # Excel file processing
+pandas>=2.0.0  # Data manipulation for Excel
+reportlab>=4.0.0  # PDF generation
+PyPDF2>=3.0.0  # Alternative PDF processing
+
+# Image Processing
+Pillow>=10.0.0  # PIL for image processing
+
+# Optional Dependencies
+python-magic>=0.4.27  # File type detection (optional)
+python-dotenv>=1.0.0  # Environment variable management (optional)
+qrcode>=7.4.0  # QR code generation (optional)
+html2text>=2020.1.16  # HTML to text conversion (optional)
+markdown>=3.5.0  # Markdown processing (optional)
+
+# System Dependencies (install separately if needed)
+# LibreOffice (for document conversion)
+# Pandoc (for document conversion)
+
+# Development Dependencies (optional)
+pytest>=7.0.0
+black>=23.0.0
+flake8>=6.0.0
