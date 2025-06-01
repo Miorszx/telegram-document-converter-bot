@@ -234,8 +234,8 @@ flake8 .
 
 ### Docker Support
 ```bash
-docker build -t telegram-document-bot .
-docker run -d --env-file .env telegram-document-bot
+docker build -t converterbot .
+docker run -d --env-file .env converterbot
 ```
 
 ## 📊 Features Matrix
@@ -323,9 +323,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 If you encounter any issues or have questions:
 
 1. Check the [Troubleshooting](#🐛-troubleshooting) section
-2. Search existing [Issues](https://github.com/yourusername/telegram-document-bot/issues)
+2. Search existing [Issues](https://github.com/Miorszx/telegram-document-converter-bot/issues)
 3. Create a new issue with detailed information
-4. Join our [Telegram Support Group](https://t.me/your_support_group)
+4. Or contact me via my [Telegram](https://t.me/miorszx7)
 
 ---
 
