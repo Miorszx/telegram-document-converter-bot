@@ -14,7 +14,6 @@ from telegram.constants import ChatAction
 from config.config import BotConfig
 from utils.security import SecurityManager
 
-
 class FileHandlers:
     """Handles file processing for the bot"""
     
@@ -24,6 +23,8 @@ class FileHandlers:
         self.security = security
         self.temp_base_dir = temp_base_dir
         self.logger = logging.getLogger(__name__)
+        # Add message tracking for clean interface
+        self.user_message_ids = {}  # Track messages to delete for clean interface
     
     def _initialize_user_data(self, user_id: int):
         """Initialize user data if not exists"""
@@ -43,12 +44,48 @@ class FileHandlers:
                 'custom_filename': None
             }
 
+    def _track_message(self, user_id: int, message_id: int):
+        """Track message ID for later cleanup"""
+        if user_id not in self.user_message_ids:
+            self.user_message_ids[user_id] = []
+        
+        self.user_message_ids[user_id].append(message_id)
+        
+        # Keep only last 10 messages to avoid memory issues
+        if len(self.user_message_ids[user_id]) > 10:
+            self.user_message_ids[user_id] = self.user_message_ids[user_id][-10:]
+
+    async def _cleanup_previous_messages(self, chat_id: int, user_id: int, context: ContextTypes.DEFAULT_TYPE):
+        """Delete previous bot messages for clean interface"""
+        if user_id in self.user_message_ids:
+            messages_to_delete = self.user_message_ids[user_id].copy()
+            self.user_message_ids[user_id] = []  # Clear the list
+            
+            for msg_id in messages_to_delete:
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                except Exception as e:
+                    # Message might already be deleted or too old
+                    self.logger.debug(f"Could not delete message {msg_id}: {e}")
+                    continue
+
+    async def _send_tracked_message(self, update: Update, text: str, reply_markup=None):
+        """Send a message and track it for cleanup"""
+        user_id = update.effective_user.id
+        msg = await update.message.reply_text(text, reply_markup=reply_markup)
+        self._track_message(user_id, msg.message_id)
+        return msg
+
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Photo handling with proper back button behavior and file path fixes"""
+        """Photo handling with clean interface - deletes previous messages"""
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
         
         user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
         self._initialize_user_data(user_id)
+        
+        # Clean interface: Delete previous bot messages for this user
+        await self._cleanup_previous_messages(chat_id, user_id, context)
         
         try:
             # Download photo
@@ -57,9 +94,10 @@ class FileHandlers:
             
             # Check file size
             if file.file_size and file.file_size > self.config.max_file_size:
-                await update.message.reply_text(
+                error_msg = await update.message.reply_text(
                     f"❌ File too large! Maximum size is {self.config.max_file_size // (1024*1024)}MB."
                 )
+                self._track_message(user_id, error_msg.message_id)
                 return
             
             # Create user temp directory
@@ -76,7 +114,8 @@ class FileHandlers:
             
             # Verify file was downloaded
             if not os.path.exists(image_path):
-                await update.message.reply_text("❌ Error downloading image. Please try again.")
+                error_msg = await update.message.reply_text("❌ Error downloading image. Please try again.")
+                self._track_message(user_id, error_msg.message_id)
                 return
             
             # Validate file only if enabled and be more permissive
@@ -86,7 +125,8 @@ class FileHandlers:
                     test_img = Image.open(image_path)
                     test_img.close()
                 except Exception as e:
-                    await update.message.reply_text("❌ Invalid image file!")
+                    error_msg = await update.message.reply_text("❌ Invalid image file!")
+                    self._track_message(user_id, error_msg.message_id)
                     if os.path.exists(image_path):
                         os.remove(image_path)
                     return
@@ -98,9 +138,10 @@ class FileHandlers:
             
             # Check if we've reached the limit
             if len(self.user_data[user_id]['images']) >= self.config.max_images_per_pdf:
-                await update.message.reply_text(
+                warning_msg = await update.message.reply_text(
                     f"⚠️ Maximum {self.config.max_images_per_pdf} images reached! Please convert current batch first."
                 )
+                self._track_message(user_id, warning_msg.message_id)
             
             # Show options WITHOUT immediate conversion buttons
             keyboard = [
@@ -116,28 +157,37 @@ class FileHandlers:
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             image_count = len(self.user_data[user_id]['images'])
-            await update.message.reply_text(
+            status_msg = await update.message.reply_text(
                 f"📸 Image received! ({image_count}/{self.config.max_images_per_pdf} total)\n\nWhat would you like to do?",
                 reply_markup=reply_markup
             )
             
+            # Track this message for future cleanup
+            self._track_message(user_id, status_msg.message_id)
+            
         except Exception as e:
             self.logger.error(f"Error handling photo: {e}")
-            await update.message.reply_text("❌ Error processing image. Please try again.")
+            error_msg = await update.message.reply_text("❌ Error processing image. Please try again.")
+            self._track_message(user_id, error_msg.message_id)
 
     async def handle_pdf(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """PDF handling with proper file path management"""
+        """PDF handling with clean interface"""
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
         
         user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
         self._initialize_user_data(user_id)
+        
+        # Clean interface: Delete previous bot messages
+        await self._cleanup_previous_messages(chat_id, user_id, context)
         
         try:
             doc = update.message.document
             
             # Check file size
             if doc.file_size and doc.file_size > self.config.max_file_size:
-                await update.message.reply_text(
+                await self._send_tracked_message(
+                    update,
                     f"❌ File too large! Maximum size is {self.config.max_file_size // (1024*1024)}MB."
                 )
                 return
@@ -164,29 +214,31 @@ class FileHandlers:
             self.user_data[user_id]['files_processed'] += 1
             self.user_data[user_id]['last_used'] = datetime.now().isoformat()
             
-            # Send without markdown to avoid entity parsing errors
-            await update.message.reply_text(
-                file_info,
-                reply_markup=reply_markup
-            )
+            # Send tracked message
+            await self._send_tracked_message(update, file_info, reply_markup)
             
         except Exception as e:
             self.logger.error(f"Error handling PDF: {e}")
-            await update.message.reply_text("❌ Error processing PDF. Please try again.")
+            await self._send_tracked_message(update, "❌ Error processing PDF. Please try again.")
 
     async def handle_word(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Word document handling with proper file path management"""
+        """Word document handling with clean interface"""
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
         
         user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
         self._initialize_user_data(user_id)
+        
+        # Clean interface: Delete previous bot messages
+        await self._cleanup_previous_messages(chat_id, user_id, context)
         
         try:
             doc = update.message.document
             
             # Check file size
             if doc.file_size and doc.file_size > self.config.max_file_size:
-                await update.message.reply_text(
+                await self._send_tracked_message(
+                    update,
                     f"❌ File too large! Maximum size is {self.config.max_file_size // (1024*1024)}MB."
                 )
                 return
@@ -204,28 +256,34 @@ class FileHandlers:
             self.user_data[user_id]['files_processed'] += 1
             self.user_data[user_id]['last_used'] = datetime.now().isoformat()
             
-            await update.message.reply_text(
+            await self._send_tracked_message(
+                update,
                 "📝 Word document received! Ready to convert?",
-                reply_markup=reply_markup
+                reply_markup
             )
             
         except Exception as e:
             self.logger.error(f"Error handling Word document: {e}")
-            await update.message.reply_text("❌ Error processing Word document. Please try again.")
+            await self._send_tracked_message(update, "❌ Error processing Word document. Please try again.")
 
     async def handle_excel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Excel file handling with proper file path management"""
+        """Excel file handling with clean interface"""
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
         
         user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
         self._initialize_user_data(user_id)
+        
+        # Clean interface: Delete previous bot messages
+        await self._cleanup_previous_messages(chat_id, user_id, context)
         
         try:
             doc = update.message.document
             
             # Check file size
             if doc.file_size and doc.file_size > self.config.max_file_size:
-                await update.message.reply_text(
+                await self._send_tracked_message(
+                    update,
                     f"❌ File too large! Maximum size is {self.config.max_file_size // (1024*1024)}MB."
                 )
                 return
@@ -243,26 +301,32 @@ class FileHandlers:
             self.user_data[user_id]['files_processed'] += 1
             self.user_data[user_id]['last_used'] = datetime.now().isoformat()
             
-            await update.message.reply_text(
+            await self._send_tracked_message(
+                update,
                 "📊 Excel file received! Ready to convert with enhanced formatting?",
-                reply_markup=reply_markup
+                reply_markup
             )
             
         except Exception as e:
             self.logger.error(f"Error handling Excel file: {e}")
-            await update.message.reply_text("❌ Error processing Excel file. Please try again.")
+            await self._send_tracked_message(update, "❌ Error processing Excel file. Please try again.")
 
     async def handle_text_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Text document handling"""
+        """Text document handling with clean interface"""
         user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
         self._initialize_user_data(user_id)
+        
+        # Clean interface: Delete previous bot messages
+        await self._cleanup_previous_messages(chat_id, user_id, context)
         
         try:
             doc = update.message.document
             
             # Check file size
             if doc.file_size and doc.file_size > self.config.max_file_size:
-                await update.message.reply_text(
+                await self._send_tracked_message(
+                    update,
                     f"❌ File too large! Maximum size is {self.config.max_file_size // (1024*1024)}MB."
                 )
                 return
@@ -280,26 +344,32 @@ class FileHandlers:
             self.user_data[user_id]['files_processed'] += 1
             self.user_data[user_id]['last_used'] = datetime.now().isoformat()
             
-            await update.message.reply_text(
+            await self._send_tracked_message(
+                update,
                 "📝 Text document received! Ready to convert?",
-                reply_markup=reply_markup
+                reply_markup
             )
             
         except Exception as e:
             self.logger.error(f"Error handling text document: {e}")
-            await update.message.reply_text("❌ Error processing text document. Please try again.")
+            await self._send_tracked_message(update, "❌ Error processing text document. Please try again.")
 
     async def handle_document_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle image documents (non-photo) with proper file path management"""
+        """Handle image documents (non-photo) with clean interface"""
         user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
         self._initialize_user_data(user_id)
+        
+        # Clean interface: Delete previous bot messages
+        await self._cleanup_previous_messages(chat_id, user_id, context)
         
         try:
             doc = update.message.document
             
             # Check file size
             if doc.file_size and doc.file_size > self.config.max_file_size:
-                await update.message.reply_text(
+                await self._send_tracked_message(
+                    update,
                     f"❌ File too large! Maximum size is {self.config.max_file_size // (1024*1024)}MB."
                 )
                 return
@@ -323,7 +393,7 @@ class FileHandlers:
             
             # Verify file was downloaded
             if not os.path.exists(image_path):
-                await update.message.reply_text("❌ Error downloading image. Please try again.")
+                await self._send_tracked_message(update, "❌ Error downloading image. Please try again.")
                 return
             
             self.user_data[user_id]['images'].append(image_path)
@@ -338,16 +408,23 @@ class FileHandlers:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            await update.message.reply_text(
+            await self._send_tracked_message(
+                update,
                 f"🖼️ Image document received!\nFormat: {doc.mime_type}",
-                reply_markup=reply_markup
+                reply_markup
             )
         except Exception as e:
             self.logger.error(f"Error handling document image: {e}")
-            await update.message.reply_text("❌ Error processing image document.")
+            await self._send_tracked_message(update, "❌ Error processing image document.")
 
     async def handle_other_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle other document types"""
+        """Handle other document types with clean interface"""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        
+        # Clean interface: Delete previous bot messages
+        await self._cleanup_previous_messages(chat_id, user_id, context)
+        
         doc = update.message.document
         file_info = f"📄 Document received: {doc.file_name}\n"
         file_info += f"Type: {doc.mime_type or 'Unknown'}\n"
@@ -360,4 +437,4 @@ class FileHandlers:
         keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="back_to_main")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(file_info, reply_markup=reply_markup)
+        await self._send_tracked_message(update, file_info, reply_markup)
